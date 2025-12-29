@@ -120,6 +120,199 @@ EXTRACTION_INTERVAL = 5  # Cambia a 3 para actualizar más seguido
                          # o a 10 para actualizar menos seguido
 ```
 
+## 📊 Diagramas de Funcionamiento
+
+### Flujo General del Programa
+
+```mermaid
+flowchart TD
+    A[Inicio del Programa] --> B[Cargar memoria desde JSON]
+    B --> C{¿Existe archivo?}
+    C -->|Sí| D[Cargar hechos en memoria]
+    C -->|No| E[Iniciar con memoria vacía]
+    D --> F[Mostrar menú principal]
+    E --> F
+    F --> G[Esperar input del usuario]
+
+    G --> H{Tipo de comando}
+    H -->|salir/exit/quit| I{¿Mensajes pendientes?}
+    H -->|memoria| J[Mostrar hechos guardados]
+    H -->|guardar| K[Forzar extracción]
+    H -->|mensaje normal| L[Enviar a LLM con contexto]
+
+    I -->|Sí| M[Extraer hechos pendientes]
+    I -->|No| N[Terminar programa]
+    M --> N
+
+    J --> G
+    K --> O[extract_important_facts force=True]
+    O --> G
+
+    L --> P[LLM procesa con memoria de largo plazo]
+    P --> Q[Recibir respuesta]
+    Q --> R[Mostrar respuesta al usuario]
+    R --> S[Incrementar contador de mensajes]
+    S --> T{¿Contador % 5 == 0?}
+    T -->|Sí| U[Actualizar memoria]
+    T -->|No| G
+    U --> V[extract_important_facts]
+    V --> G
+```
+
+### Proceso de Extracción de Memoria
+
+```mermaid
+flowchart TD
+    A[Inicio extract_important_facts] --> B{¿Hay mensajes suficientes?}
+    B -->|No| Z[Terminar]
+    B -->|Sí| C[Obtener mensajes desde última extracción]
+
+    C --> D[Limitar a últimos 10 mensajes]
+    D --> E[Preparar contexto con memoria actual]
+    E --> F[Enviar a LLM con prompt especial]
+
+    F --> G[LLM analiza conversación]
+    G --> H[LLM genera JSON con new_facts y updates]
+
+    H --> I[Parsear respuesta JSON]
+    I --> J{¿Parsing exitoso?}
+    J -->|No| Z
+    J -->|Sí| K[Procesar updates primero]
+
+    K --> L{¿Hay updates?}
+    L -->|Sí| M[Para cada update]
+    L -->|No| P
+
+    M --> N{¿Hecho encontrado?}
+    N -->|Exacto| O[Reemplazar hecho]
+    N -->|Similar| O
+    N -->|No encontrado| P
+
+    O --> P[Procesar new_facts]
+    P --> Q{¿Hay hechos nuevos?}
+    Q -->|Sí| R[Para cada hecho nuevo]
+    Q -->|No| X
+
+    R --> S{¿Es duplicado?}
+    S -->|Sí| T[Ignorar hecho]
+    S -->|No| U[Añadir a memoria]
+
+    T --> V{¿Más hechos?}
+    U --> V
+    V -->|Sí| R
+    V -->|No| W{¿Excede límite?}
+
+    W -->|Sí| X[Eliminar hechos antiguos FIFO]
+    W -->|No| Y
+    X --> Y[Guardar memoria en JSON]
+    Y --> AA[Actualizar índice de última extracción]
+    AA --> Z
+```
+
+### Sistema de Actualización de Hechos
+
+```mermaid
+flowchart TD
+    A[Recibir update del LLM] --> B[Extraer old y new]
+    B --> C[Buscar en memoria actual]
+
+    C --> D{Búsqueda Exacta}
+    D -->|Encontrado| E[Reemplazar directamente]
+    D -->|No encontrado| F{Búsqueda por Similitud}
+
+    F --> G[Calcular similitud de palabras]
+    G --> H{¿Similitud > 60%?}
+    H -->|Sí| I[Reemplazar hecho similar]
+    H -->|No| J[No actualizar]
+
+    E --> K[Mostrar mensaje: Actualizado]
+    I --> K
+    J --> L[Fin]
+    K --> L
+
+    style E fill:#90EE90
+    style I fill:#90EE90
+    style J fill:#FFB6C6
+```
+
+### Proceso de Deduplicación
+
+```mermaid
+flowchart TD
+    A[Nuevo hecho a verificar] --> B[Convertir a minúsculas y limpiar]
+
+    B --> C[Para cada hecho en memoria]
+    C --> D{Verificación 1: ¿Texto exacto?}
+    D -->|Sí| E[ES DUPLICADO ❌]
+    D -->|No| F{Verificación 2: ¿Contención?}
+
+    F --> G[¿Uno contiene al otro?]
+    G -->|Sí| H{¿Similitud longitud > 80%?}
+    G -->|No| I{Verificación 3: ¿Similitud temática?}
+
+    H -->|Sí| E
+    H -->|No| I
+
+    I --> J[Calcular palabras comunes]
+    J --> K{¿Similitud > 60%?}
+    K -->|Sí| E
+    K -->|No| L{¿Más hechos en memoria?}
+
+    L -->|Sí| C
+    L -->|No| M[NO ES DUPLICADO ✅]
+
+    M --> N[Añadir a memoria]
+    E --> O[Ignorar hecho]
+
+    style M fill:#90EE90
+    style E fill:#FFB6C6
+    style N fill:#87CEEB
+    style O fill:#FFD700
+```
+
+### Ciclo de Vida de un Hecho
+
+```mermaid
+stateDiagram-v2
+    [*] --> Conversación: Usuario habla
+    Conversación --> EnEspera: Mensaje guardado en historial
+    EnEspera --> EnEspera: Más mensajes (< 5)
+    EnEspera --> Análisis: 5 mensajes alcanzados
+    EnEspera --> Análisis: Usuario ejecuta "guardar"
+    EnEspera --> Análisis: Usuario ejecuta "salir"
+
+    Análisis --> Extracción: LLM analiza contexto
+    Extracción --> Verificación: Genera new_facts/updates
+
+    Verificación --> Duplicado: Es duplicado
+    Verificación --> Actualización: Contradice info existente
+    Verificación --> Nuevo: Es información nueva
+
+    Duplicado --> [*]: Descartado
+
+    Actualización --> BuscarSimilar: Busca hecho a reemplazar
+    BuscarSimilar --> Reemplazado: Encontrado
+    BuscarSimilar --> Nuevo: No encontrado
+
+    Reemplazado --> EnMemoria: Actualizado
+    Nuevo --> EnMemoria: Añadido
+
+    EnMemoria --> EnMemoria: Persiste en JSON
+    EnMemoria --> Eliminado: Excede límite (FIFO)
+
+    Eliminado --> [*]: Removido
+
+    note right of Análisis
+        Se activa cada 5 mensajes
+        o al forzar guardado
+    end note
+
+    note right of EnMemoria
+        Máximo 30 hechos
+        Guardado automático en disco
+    end note
+```
+
 ## 🧪 Cómo Funciona
 
 ### 1. Memoria de Sesión vs Largo Plazo
